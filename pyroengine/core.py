@@ -15,6 +15,9 @@ import urllib3
 from .engine import Engine
 from .sensors import ReolinkCamera
 
+import os
+from PIL import Image
+
 __all__ = ["SystemController", "is_day_time"]
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -116,6 +119,62 @@ class SystemController:
         self.cameras = cameras
         self.is_day = True
 
+
+    async def capture_extra_frames(self, camera: ReolinkCamera, cam_id: str, save_folder: str = "/usr/src/app/data/fire_sequences", max_sequences: int = 150) -> None:
+        """
+        Captures 60 frames from a camera at 1 frame per second and saves them locally,
+        unless the maximum number of sequences is reached.
+
+        Args:
+            camera (ReolinkCamera): The camera instance.
+            cam_id (str): The camera ID.
+            save_folder (str): Absolute path where to save captured frames.
+            max_sequences (int): Maximum number of capture sequences allowed.
+        """
+        if not os.path.exists(save_folder):
+            os.makedirs(save_folder)
+
+        existing_sequences = [name for name in os.listdir(save_folder) if os.path.isdir(os.path.join(save_folder, name))]
+
+        if len(existing_sequences) >= max_sequences:
+            logging.warning(f"⚠️ Max sequence limit reached ({max_sequences}). Skipping capture for {cam_id}.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cam_id_safe = cam_id.replace(":", "_")
+        folder_path = os.path.join(save_folder, f"{cam_id_safe}_{timestamp}")
+        os.makedirs(folder_path, exist_ok=True)
+        
+        logging.info(f"📸 Starting extra frame capture for {cam_id}, saving to {folder_path}")
+
+        frames = []
+        start_time = time.time()
+
+        # Phase 1: Capture
+        for i in range(60):
+            try:
+                frame = camera.capture()
+                if frame is not None:
+                    frames.append(frame.copy())
+                    logging.info(f"Captured frame {i+1}/60 for {cam_id}")
+                else:
+                    logging.warning(f"No frame captured from {cam_id} at iteration {i}")
+            except Exception as e:
+                logging.error(f"Error capturing frame from {cam_id}: {e}")
+
+            next_capture_time = start_time + (i + 1)
+            sleep_time = max(0, next_capture_time - time.time())
+            await asyncio.sleep(sleep_time)
+
+        # Phase 2: Save
+        for idx, frame in enumerate(frames):
+            try:
+                save_path = os.path.join(folder_path, f"frame_{idx:03}.jpg")
+                frame.save(save_path, quality=90)
+                logging.info(f"Saved frame {idx+1}/60 for {cam_id} in {folder_path}")
+            except Exception as e:
+                logging.error(f"Error saving frame {idx+1} for {cam_id}: {e}")
+
     async def capture_images(self, image_queue: asyncio.Queue) -> bool:
         """
         Captures images from all cameras using asyncio.
@@ -131,23 +190,32 @@ class SystemController:
         return all(day_times)
 
     async def analyze_stream(self, image_queue: asyncio.Queue) -> None:
-        """
-        Analyzes the image stream from the queue.
-
-        Args:
-            image_queue (asyncio.Queue): The queue with images to analyze.
-        """
         while True:
             item = await image_queue.get()
             if item is None:
                 break
             cam_id, frame = item
             try:
+                prev_ongoing = self.engine._states.get(cam_id, {}).get("ongoing", False)
+
                 self.engine.predict(frame, cam_id)
+
+                # Check if fire just started
+                now_ongoing = self.engine._states.get(cam_id, {}).get("ongoing", False)
+                if not prev_ongoing and now_ongoing:
+                    logging.info(f"🔥 Fire detected for camera {cam_id}! Capturing extra frames...")
+                    # Find the camera object
+                    camera_obj = next((cam for cam in self.cameras if cam.ip_address in cam_id), None)
+                    if camera_obj is not None:
+                        asyncio.create_task(self.capture_extra_frames(camera_obj, cam_id))
+                    else:
+                        logging.warning(f"Camera object not found for {cam_id}")
+
             except Exception as e:
                 logging.error(f"Error running prediction: {e}")
             finally:
-                image_queue.task_done()  # Mark the task as done
+                image_queue.task_done()
+
 
     async def night_mode(self) -> bool:
         """

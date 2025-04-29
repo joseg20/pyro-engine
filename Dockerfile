@@ -21,10 +21,12 @@ COPY ./src/requirements.txt /tmp/requirements.txt
 RUN pip install --default-timeout=500 -r /tmp/requirements.txt \
     && pip cache purge \
     && rm -rf /root/.cache/pip
+    
+# Copiar proyecto
+COPY . /tmp/
 
-COPY ./pyroengine /tmp/pyroengine
-
-RUN pip install -e /tmp/. \
+# Instalar en modo editable
+RUN pip install -e /tmp/ \
     && pip cache purge \
     && rm -rf /root/.cache/pip
 
