@@ -22,11 +22,11 @@ RUN pip install --default-timeout=500 -r /tmp/requirements.txt \
     && pip cache purge \
     && rm -rf /root/.cache/pip
     
-COPY pyproject.toml /tmp/pyproject.toml
 COPY setup.py /tmp/setup.py
-COPY .pyroengine /tmp/.pyroengine
+COPY pyproject.toml /tmp/pyproject.toml
+COPY ./pyroengine /tmp/pyroengine
 
-RUN pip install -e /tmp/ \
+RUN pip install -e /tmp/. \
     && pip cache purge \
     && rm -rf /root/.cache/pip
 
